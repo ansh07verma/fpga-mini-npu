@@ -202,6 +202,6 @@ ani = FuncAnimation(fig, update, frames=TOTAL, init_func=lambda: [],
                     blit=False, interval=INTERVAL)
 
 os.makedirs('docs/assets', exist_ok=True)
-out = 'docs/assets/dataflow.gif'
+out = 'docs/assets/dataflow_v2.gif'
 ani.save(out, writer='pillow', dpi=120)
 print(f'Saved: {out}')

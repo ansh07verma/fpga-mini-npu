@@ -24,7 +24,7 @@ y = y + (activation * weight)    // 2-stage pipelined MAC
 
 ### Systolic Array Dataflow (Animation)
 
-![Dataflow Animation](docs/assets/dataflow.gif?v=2)
+![Dataflow Animation](docs/assets/dataflow_v2.gif)
 
 > Each frame = 1 clock cycle. **Cyan-glowing** PEs are actively computing. **Magenta packets** are activations flowing right. **Green packets** are partial sums draining down. Note the diagonal wavefront characteristic of weight-stationary systolic execution.
 
