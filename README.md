@@ -160,14 +160,41 @@ Below are cycle-accurate waveform captures demonstrating the core operation of t
 | Metric | Value | Notes |
 |--------|-------|-------|
 | **WNS (timing slack)** | **+0.153 ns ✅** | Synthesis: +0.819 ns → Post-place: +0.505 ns → Post-route: +0.153 ns |
-| Slice LUTs | 1,811 / 20,800 (8.71%) | Post-route |
+| Slice LUTs | 1,801 / 20,800 (8.66%) | Post-synthesis |
 | Slice Registers | 1,258 / 41,600 (3.02%) | |
 | DSP48E1 | 16* (synthesis: 0) / 90 (18%) | `(* use_dsp = "yes" *)` — maps at implementation |
 | Block RAM | 0 / 50 (0%) | Pure register-file implementation |
-| **Latency (4×4 matmul)** | **17 cycles** | LOAD_W(4)+CLR(1)+COMPUTE(4)+DRAIN(6)+DONE(1) |
+| **Latency (4×4 matmul)** | **17 cycles** | LOAD\_W(4)+CLR(1)+COMPUTE(4)+DRAIN(6)+CAP(1)+DONE(1) |
 | **Throughput** | **1 matmul / 170 ns** | At 100 MHz |
-| **Bitstream** | **npu_top.bit (2,140 KB)** | ✅ Ready to flash to Basys3 |
 | Accumulator | 24-bit signed | No overflow: max = 4×127×127 = 64,516 |
+
+### CPU vs NPU Baseline Comparison
+
+> Model: scalar CPU executing N³ INT8 MACs at 1 MAC/cycle (no SIMD, no cache optimization) vs. this systolic array. All numbers are derived from the verified 17-cycle testbench result.
+
+| System | MACs | CPU Cycles | NPU Cycles | CPU Latency | NPU Latency | Speedup |
+|--------|------|-----------|-----------|-------------|-------------|--------|
+| 2×2 Array | 8 | 8 | 9 | 80 ns | 90 ns | 0.89× |
+| **4×4 Array** | **64** | **64** | **17** | **640 ns** | **170 ns** | **3.76×** |
+| 8×8 Array *(est.)* | 512 | 512 | 33 | 5,120 ns | 330 ns | 15.52× *(est.)* |
+
+> **Note on the 2×2 result:** At N=2, FSM overhead (9 cycles total) actually exceeds the 8 CPU operations, so the small array is slower than a scalar CPU. This illustrates a fundamental architectural truth: systolic arrays only amortize their overhead at N≥4.
+
+![Baseline Comparison](results/plots/baseline_comparison.png)
+
+### Resource Scaling Analysis
+
+Both the 2×2 and 4×4 rows are **real Vivado synthesis results** on XC7A35T. The 8×8 row is an analytical O(N²) estimate clearly marked as such.
+
+| Array Size | Slice LUTs | Flip-Flops | DSPs (impl) | Latency (cyc) | Speedup vs CPU | Source |
+|-----------|-----------|-----------|------------|--------------|---------------|--------|
+| 2×2 | 391 / 20,800 (1.9%) | 229 / 41,600 (0.6%) | 4 | 9 | 0.89× | Vivado synthesis |
+| **4×4** | **1,801 / 20,800 (8.7%)** | **1,258 / 41,600 (3.0%)** | **16** | **17** | **3.76×** | **Vivado synthesis** |
+| 8×8 *(est.)* | ~7,100 / 20,800 (~34%) | ~5,000 / 41,600 (~12%) | 64 | 33 | 15.52× | O(N²) estimate |
+
+> An 8×8 array would still fit comfortably on the XC7A35T (~34% LUT utilization), leaving headroom for control logic, buffers, and I/O.
+
+![Resource Scaling](results/plots/resource_scaling.png)
 
 ---
 
@@ -197,7 +224,23 @@ Because computation flows diagonally across the array, we achieve **O(N²)** par
 
 ![Systolic Timing](docs/assets/systolic_timing.png)
 
-This achieves high throughput and low power—the key advantage over CPU sequential execution.
+## Architecture Limitations & Future Work
+
+This project is deliberately **compute-centric** — it demonstrates the systolic execution engine in isolation. Real production NPUs are primarily memory-bandwidth-constrained systems.
+
+| Aspect | This Design | Real NPU |
+|--------|------------|----------|
+| Memory | Register files (synthesized FFs) | BRAM banks → HBM stacks |
+| Data supply | Testbench-loaded registers | DMA engine + AXI4-Stream bus |
+| Bottleneck | FSM overhead (17-cycle latency) | Memory bandwidth (roofline limit) |
+| Scope | Educational clarity | Production silicon |
+
+### Improvement Roadmap
+
+1. **BRAM Weight Buffer** — Replace register-file `wmem` with RAMB36 for larger weight matrices without consuming FF resources.
+2. **AXI4-Stream Interface** — Add a streaming input port so activation data can be DMA-fed from DDR without CPU intervention.
+3. **Tiling Controller** — Add an outer-loop FSM that tiles large matrix operations across multiple 4×4 sub-blocks, enabling arbitrary-size matmul.
+4. **8×8 Instantiation** — The parameterized design scales directly; synthesis estimates ~34% LUT utilization — within Basys3 budget.
 
 ---
 

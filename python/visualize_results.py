@@ -1,12 +1,18 @@
 """
 visualize_results.py — NPU Performance & Resource Visualization
 ===============================================================
-Generates 4 publication-quality plots:
+Generates 5 publication-quality plots:
 
   1. Throughput vs Matrix Size (cycles per matmul)
-  2. NPU vs CPU speedup bar chart
+  2. NPU vs CPU speedup bar chart (honest: 3.76x for 4x4)
   3. Resource utilization breakdown (LUT, FF, CARRY4, DSP, IOB)
   4. Timing slack progression (synthesis → place → route)
+  5. Resource Scaling (2x2 real + 4x4 real + 8x8 estimated)
+
+All numbers are derived from:
+  - Real Vivado synthesis reports (utilization.rpt, utilization_2x2.rpt)
+  - Verified testbench results (tb_npu_top: 20/20 PASS, 17 cycles)
+  - First-principles CPU model: N³ MACs at 1 MAC/cycle (scalar, no SIMD)
 
 Usage:
     python python/visualize_results.py
@@ -16,6 +22,7 @@ Output:
     results/plots/speedup.png
     results/plots/utilization.png
     results/plots/timing_progression.png
+    results/plots/resource_scaling.png
 """
 
 import os
@@ -43,13 +50,17 @@ os.makedirs(OUT_DIR, exist_ok=True)
 
 # ── Data ──────────────────────────────────────────────────────────────────────
 
-# Cycles per NxN matrix multiply: LOAD_W(N) + CLR(1) + COMPUTE(N) + DRAIN(N+2) + DONE(1)
+# Cycles per NxN matrix multiply:
+# LOAD_W(N) + CLR(1) + COMPUTE(N) + DRAIN(2N-2) + CAPTURE(1) + DONE(1)
+# Verified: N=4 → 4+1+4+6+1+1 = 17 cycles ✓ (tb_npu_top 20/20 PASS)
 def npu_cycles(N):
-    return N + 1 + N + (N + 2) + 1   # = 3N + 4
+    return N + 1 + N + (2*N - 2) + 1 + 1   # = 4N + 1
 
-# CPU cycles (scalar sequential): N³ multiply-adds + loop overhead (≈ 2N³)
+# CPU cycles (scalar sequential): N³ MACs at 1 MAC/cycle
+# Conservative model: no SIMD, no cache effects, no loop overhead
+# A 32-bit scalar multiply-accumulate = 1 cycle on in-order CPU
 def cpu_cycles(N):
-    return 2 * N**3
+    return N**3
 
 array_sizes   = np.array([2, 4, 8, 16, 32])
 npu_cyc       = np.array([npu_cycles(n) for n in array_sizes])
@@ -230,19 +241,87 @@ print(f"  Saved: timing_progression.png")
 plt.close()
 
 # ─────────────────────────────────────────────────────────────────────────────
+# Plot 5: Resource Scaling across array sizes
+# Real synthesis: 2×2 (391 LUTs, 229 FFs) and 4×4 (1801 LUTs, 1258 FFs)
+# 8×8 estimated analytically: scales as O(N²) with per-PE overhead
+# ─────────────────────────────────────────────────────────────────────────────
+
+# Real Vivado synthesis numbers
+scale_sizes  = ["2×2\n(synthesis)", "4×4\n(synthesis)", "8×8\n(estimated)"]
+scale_luts   = [391,  1801, 7100]   # 8×8 ≈ 4× the 4×4 (16 PEs vs 4 PEs for core logic)
+scale_ffs    = [229,  1258, 5000]
+scale_cyc    = [npu_cycles(2), npu_cycles(4), npu_cycles(8)]  # 9, 17, 33
+scale_cpu    = [cpu_cycles(n) for n in [2, 4, 8]]             # 8, 64, 512
+scale_spdup  = [c/n for c, n in zip(scale_cpu, scale_cyc)]
+scale_colors = ["#4C72B0", "#2ecc71", "#9b59b6"]
+scale_est    = [False, False, True]
+
+fig, axes = plt.subplots(1, 3, figsize=(15, 5))
+fig.suptitle("Resource Scaling Analysis — Systolic Array on XC7A35T",
+             fontsize=14, fontweight="bold")
+
+# Left: LUT scaling
+for i, (label, val, color, est) in enumerate(zip(scale_sizes, scale_luts, scale_colors, scale_est)):
+    bar = axes[0].bar(i, val, color=color, alpha=0.85, edgecolor="black", linewidth=1.2)
+    suffix = "\n(est.)" if est else ""
+    axes[0].text(i, val + 50, f"{val:,}{suffix}", ha="center", va="bottom",
+                 fontsize=10, fontweight="bold")
+axes[0].axhline(y=20800, color="red", linestyle="--", alpha=0.6, label="XC7A35T Max (20,800)")
+axes[0].set_xticks(range(3))
+axes[0].set_xticklabels(scale_sizes, fontsize=10)
+axes[0].set_ylabel("Slice LUTs Used")
+axes[0].set_title("LUT Resource Usage")
+axes[0].legend(fontsize=9)
+axes[0].set_ylim(0, 24000)
+
+# Middle: FF scaling
+for i, (label, val, color, est) in enumerate(zip(scale_sizes, scale_ffs, scale_colors, scale_est)):
+    axes[1].bar(i, val, color=color, alpha=0.85, edgecolor="black", linewidth=1.2)
+    suffix = "\n(est.)" if est else ""
+    axes[1].text(i, val + 50, f"{val:,}{suffix}", ha="center", va="bottom",
+                 fontsize=10, fontweight="bold")
+axes[1].axhline(y=41600, color="red", linestyle="--", alpha=0.6, label="XC7A35T Max (41,600)")
+axes[1].set_xticks(range(3))
+axes[1].set_xticklabels(scale_sizes, fontsize=10)
+axes[1].set_ylabel("Flip-Flops (FFs) Used")
+axes[1].set_title("Register Usage")
+axes[1].legend(fontsize=9)
+axes[1].set_ylim(0, 48000)
+
+# Right: Speedup vs array size
+for i, (val, color, est) in enumerate(zip(scale_spdup, scale_colors, scale_est)):
+    axes[2].bar(i, val, color=color, alpha=0.85, edgecolor="black", linewidth=1.2)
+    suffix = "\n(est.)" if est else ""
+    axes[2].text(i, val + 0.05, f"{val:.2f}×{suffix}", ha="center", va="bottom",
+                 fontsize=10, fontweight="bold")
+axes[2].axhline(y=1, color="#e74c3c", linestyle="--", alpha=0.7, label="CPU baseline (1×)")
+axes[2].set_xticks(range(3))
+axes[2].set_xticklabels(scale_sizes, fontsize=10)
+axes[2].set_ylabel("Speedup vs Scalar CPU")
+axes[2].set_title("Measured Speedup\n(CPU cycles / NPU cycles)")
+axes[2].legend(fontsize=9)
+axes[2].set_ylim(0, max(scale_spdup) * 1.3)
+
+plt.tight_layout()
+plt.savefig(os.path.join(OUT_DIR, "resource_scaling.png"))
+print(f"  Saved: resource_scaling.png")
+plt.close()
+
+# ─────────────────────────────────────────────────────────────────────────────
 # Summary
 # ─────────────────────────────────────────────────────────────────────────────
-print(f"\n{'='*55}")
+print(f"\n{'='*60}")
 print(f"  All plots written to: {OUT_DIR}/")
-print(f"  throughput.png       — cycles vs matrix size")
-print(f"  speedup.png          — NPU speedup over CPU")
-print(f"  utilization.png      — FPGA resource breakdown")
+print(f"  throughput.png         — cycles vs matrix size")
+print(f"  speedup.png            — NPU speedup over CPU")
+print(f"  utilization.png        — FPGA resource breakdown")
 print(f"  timing_progression.png — WNS through impl stages")
-print(f"{'='*55}\n")
+print(f"  resource_scaling.png   — 2x2 / 4x4 / 8x8 scaling")
+print(f"{'='*60}\n")
 print(f"  NPU Key Numbers (N=4, 100 MHz):")
 print(f"    Latency   : {MEASURED['cycles']} cycles = "
       f"{MEASURED['cycles']*10} ns per 4×4 matmul")
-print(f"    Speedup   : {cpu_cycles(4)/npu_cycles(4):.1f}× over scalar CPU")
+print(f"    Speedup   : {cpu_cycles(4)/npu_cycles(4):.2f}× over scalar CPU (honest: N³/{npu_cycles(4)})")
 print(f"    WNS       : +{MEASURED['wns_route']:.3f} ns (post-route)")
 print(f"    Max Fclk  : {1/(10-MEASURED['wns_route'])*1000:.1f} MHz")
-print(f"    LUT util  : {1811/20800*100:.1f}%  FFs: {1258/41600*100:.1f}%")
+print(f"    LUT util  : {1801/20800*100:.1f}%  FFs: {1258/41600*100:.1f}%")
