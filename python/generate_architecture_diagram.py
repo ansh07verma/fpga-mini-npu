@@ -157,9 +157,10 @@ for r in range(N):
 
 txt(PX+PW+0.55, pe_cy(1,0)+0.30, 'a_rows[31:0]', fs=8, color='#ff66ff')
 
-# ── Legend (bottom-right, well clear of grid) ─────────────────────────────────
-LX, LY = 13.45, 1.00
+# ── Legend (right-middle, vertically centred with the PE grid) ────────────────
 LW, LH = 3.30, 3.00
+LX = 13.45
+LY = (GY0 + grid_height/2) - LH/2   # vertically centred on the PE grid
 box(LX, LY, LW, LH, '#050505', '#444444', lw=1.5)
 txt(LX+LW/2, LY+LH-0.30, 'Data Flow Legend', fs=10, bold=True, color='#dddddd')
 
