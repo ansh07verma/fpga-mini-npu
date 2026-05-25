@@ -13,34 +13,46 @@
 
 ## Architecture Overview
 
-```
- External Interface
- ┌─────────────────────────────────────────────────────────────┐
- │  wr_en / wr_data  ──►  Input Buffer (Matrix A)             │
- │                   ──►  Weight Buffer (Matrix B)             │
- │                                                             │
- │  start ──► Controller FSM ──────────────────────────────►  │
- │             IDLE→LOAD_W→LOAD_A→COMPUTE→DRAIN→DONE          │
- │                    │                                        │
- │                    ▼                                        │
- │         ┌─────────────────────┐                            │
- │         │  4×4 Systolic Array  │                            │
- │         │  [PE][PE][PE][PE]   │  ← weights stationary      │
- │         │  [PE][PE][PE][PE]   │  ← activations flow right  │
- │         │  [PE][PE][PE][PE]   │  ← partial sums flow down  │
- │         │  [PE][PE][PE][PE]   │                            │
- │         └─────────┬───────────┘                            │
- │                   │ y_out                                   │
- │                   ▼                                        │
- │         Output Buffer (Matrix C)  ──►  rd_data             │
- │                                        done LED            │
- └─────────────────────────────────────────────────────────────┘
+```mermaid
+graph TD
+    %% External Inputs
+    ext_in[wr_en / wr_data] --> buf_a[Input Buffer <br> Matrix A]
+    ext_in --> buf_w[Weight Buffer <br> Matrix B]
+    
+    start_cmd[start] --> fsm{Controller FSM}
+    fsm -->|States| fsm_states[IDLE ➔ LOAD_W ➔ LOAD_A ➔ COMPUTE ➔ DRAIN ➔ DONE]
+    
+    %% Buffers to Array
+    buf_a -->|Activations flow Right| sys_array
+    buf_w -->|Weights load & stationary| sys_array
+    
+    subgraph sys_array [4×4 Systolic Array]
+        direction TB
+        pe00[PE] --- pe01[PE] --- pe02[PE] --- pe03[PE]
+        pe10[PE] --- pe11[PE] --- pe12[PE] --- pe13[PE]
+        pe20[PE] --- pe21[PE] --- pe22[PE] --- pe23[PE]
+        pe30[PE] --- pe31[PE] --- pe32[PE] --- pe33[PE]
+    end
+    
+    %% Array to Output
+    sys_array -->|Partial sums flow Down| buf_c[Output Buffer <br> Matrix C]
+    
+    buf_c --> ext_out1[rd_data]
+    fsm --> ext_out2[done LED]
+    
+    classDef buffer fill:#f9f,stroke:#333,stroke-width:2px;
+    class buf_a,buf_w,buf_c buffer;
+    classDef core fill:#bbf,stroke:#333,stroke-width:2px;
+    class sys_array core;
 ```
 
 Each **Processing Element (PE)** implements:
+```verilog
+y = y + (activation * weight)    // 2-stage pipelined MAC
 ```
-y = y + (activation × weight)    // 2-stage pipelined MAC
-```
+
+### Systolic Array Dataflow (Animation)
+![Dataflow Animation](docs/assets/dataflow.gif)
 
 ---
 
@@ -181,7 +193,12 @@ In a weight-stationary systolic array:
 3. **Accumulate**: Partial dot products accumulate downward through PE rows
 4. **Drain phase**: After N+pipeline cycles, results are read from the bottom row
 
-This achieves **O(N²) parallelism** with **O(1) memory bandwidth** per cycle — the key advantage over CPU sequential execution.
+### Space-Time Execution Schedule
+Because computation flows diagonally across the array, we achieve **O(N²)** parallelism while only fetching **O(N)** data elements from memory per cycle. The wavefront schedule below demonstrates how PE utilization progresses over time:
+
+![Systolic Timing](docs/assets/systolic_timing.png)
+
+This achieves high throughput and low power—the key advantage over CPU sequential execution.
 
 ---
 
