@@ -13,38 +13,9 @@
 
 ## Architecture Overview
 
-```mermaid
-graph TD
-    %% External Inputs
-    ext_in[wr_en / wr_data] --> buf_a[Input Buffer <br> Matrix A]
-    ext_in --> buf_w[Weight Buffer <br> Matrix B]
-    
-    start_cmd[start] --> fsm{Controller FSM}
-    fsm -->|States| fsm_states[IDLE ➔ LOAD_W ➔ LOAD_A ➔ COMPUTE ➔ DRAIN ➔ DONE]
-    
-    %% Buffers to Array
-    buf_a -->|Activations flow Right| sys_array
-    buf_w -->|Weights load & stationary| sys_array
-    
-    subgraph sys_array [4×4 Systolic Array]
-        direction TB
-        pe00[PE] --- pe01[PE] --- pe02[PE] --- pe03[PE]
-        pe10[PE] --- pe11[PE] --- pe12[PE] --- pe13[PE]
-        pe20[PE] --- pe21[PE] --- pe22[PE] --- pe23[PE]
-        pe30[PE] --- pe31[PE] --- pe32[PE] --- pe33[PE]
-    end
-    
-    %% Array to Output
-    sys_array -->|Partial sums flow Down| buf_c[Output Buffer <br> Matrix C]
-    
-    buf_c --> ext_out1[rd_data]
-    fsm --> ext_out2[done LED]
-    
-    classDef buffer fill:#f9f,stroke:#333,stroke-width:2px;
-    class buf_a,buf_w,buf_c buffer;
-    classDef core fill:#bbf,stroke:#333,stroke-width:2px;
-    class sys_array core;
-```
+![NPU Architecture](docs/assets/architecture_block.png)
+
+> **Dataflow:** Weights are pre-loaded into each PE and remain stationary. Activation vectors stream *rightward* across each row, staggered by one cycle per row to create the characteristic diagonal wavefront. Partial sums accumulate *downward* through each column.
 
 Each **Processing Element (PE)** implements:
 ```verilog
@@ -52,7 +23,10 @@ y = y + (activation * weight)    // 2-stage pipelined MAC
 ```
 
 ### Systolic Array Dataflow (Animation)
+
 ![Dataflow Animation](docs/assets/dataflow.gif)
+
+> Each frame = 1 clock cycle. **Cyan-glowing** PEs are actively computing. **Magenta packets** are activations flowing right. **Green packets** are partial sums draining down. Note the diagonal wavefront characteristic of weight-stationary systolic execution.
 
 ---
 

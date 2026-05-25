@@ -1,101 +1,256 @@
+"""
+generate_animation.py  (v2 — proper wavefront animation)
+
+Animates the weight-stationary systolic array dataflow:
+  - Weights stay INSIDE each PE (gold labels, stationary)
+  - Activation "packets" (magenta circles) stream in from the left,
+    staggered by row (row 1 delayed 1 cycle, row 2 delayed 2 cycles...)
+  - Each PE lights up (cyan glow) while it is actively computing
+  - Partial sums (green packets) drain downward from each column
+  - The characteristic diagonal wavefront is clearly visible
+
+Output: docs/assets/dataflow.gif
+"""
+
 import matplotlib.pyplot as plt
+import matplotlib.patches as mpatches
+import matplotlib.patheffects as pe_fx
 from matplotlib.animation import FuncAnimation
 import numpy as np
-import matplotlib.patches as patches
+import os
 
-# Config
-N = 4
-CYCLES = 12
-FIG_SIZE = (8, 6)
+N        = 4
+TOTAL    = 14        # total animation cycles (0..13)
+INTERVAL = 700       # ms per frame
 
-fig, ax = plt.subplots(figsize=FIG_SIZE)
-ax.set_xlim(-2, N + 1)
-ax.set_ylim(-N - 1, 2)
+# Grid layout
+PE_W, PE_H = 1.4, 1.2
+GAP_X, GAP_Y = 0.45, 0.40
+GRID_X0, GRID_Y0 = 2.2, 1.8
+PACK_R   = 0.18      # circle radius for data packets
+
+# Compute PE centre positions
+def pe_center(r, c):
+    x = GRID_X0 + c * (PE_W + GAP_X) + PE_W / 2
+    y = GRID_Y0 + (N-1-r) * (PE_H + GAP_Y) + PE_H / 2
+    return x, y
+
+fig, ax = plt.subplots(figsize=(11, 8))
+fig.patch.set_facecolor('#0d1b2a')
+ax.set_facecolor('#0d1b2a')
+ax.set_xlim(0.2, 10.5)
+ax.set_ylim(0.5, 9.2)
+ax.set_aspect('equal')
 ax.axis('off')
-ax.set_title("Weight-Stationary Systolic Array Dataflow", fontsize=16, pad=20)
 
-# Colors
-PE_COLOR = '#3498db'
-A_COLOR = '#e74c3c'  # Activations flowing right
-B_COLOR = '#f1c40f'  # Weights (stationary)
-C_COLOR = '#2ecc71'  # Partial sums flowing down
+# ── static title & legend ─────────────────────────────────────────────────────
+ax.text(5.4, 8.85,
+        'Weight-Stationary Systolic Array — Wavefront Dataflow',
+        ha='center', va='center', fontsize=13, fontweight='bold',
+        color='#e0e0e0')
+ax.text(5.4, 8.5,
+        '4 × 4 INT8 PE grid  |  Activations → right  |  Partial sums ↓ down  |  Weights stationary',
+        ha='center', va='center', fontsize=9, color='#888888')
 
-# Draw PE grid
-pes = {}
+legend_items = [
+    (mpatches.Circle((0,0), 0.1, color='#cc33cc'), 'Activation packet (flows right)'),
+    (mpatches.Circle((0,0), 0.1, color='#22bb55'), 'Partial sum (flows down)'),
+    (mpatches.Rectangle((0,0), 0.3, 0.2, color='#1e5080', ec='#33aaff', lw=1.5), 'PE (idle)'),
+    (mpatches.Rectangle((0,0), 0.3, 0.2, color='#0a3060', ec='#00eeff', lw=2.5), 'PE (computing)'),
+]
+ax.legend(handles=[h for h,_ in legend_items],
+          labels=[t for _,t in legend_items],
+          loc='upper right', fontsize=8.5,
+          facecolor='#111e2e', edgecolor='#334455',
+          labelcolor='#cccccc', framealpha=0.9)
+
+# ── static PE boxes & weight labels ───────────────────────────────────────────
+pe_boxes  = {}
+pe_labels = {}
+pe_weight_labels = {}
+
 for r in range(N):
     for c in range(N):
-        rect = patches.Rectangle((c, -r-1), 0.8, 0.8, linewidth=2, edgecolor='#2c3e50', facecolor=PE_COLOR, alpha=0.3)
-        ax.add_patch(rect)
-        # Weight label (stationary)
-        ax.text(c + 0.4, -r - 0.2, f"W{r}{c}", ha='center', va='center', color=B_COLOR, fontweight='bold', fontsize=9)
-        
-        # dynamic text handles
-        pes[(r, c)] = {
-            'act': ax.text(c + 0.15, -r - 0.7, "", ha='center', va='center', color=A_COLOR, fontsize=10, fontweight='bold'),
-            'psum': ax.text(c + 0.65, -r - 0.7, "", ha='center', va='center', color=C_COLOR, fontsize=10, fontweight='bold')
-        }
+        cx, cy = pe_center(r, c)
+        px = cx - PE_W/2
+        py = cy - PE_H/2
+        box = mpatches.FancyBboxPatch((px, py), PE_W, PE_H,
+            boxstyle='round,pad=0.06',
+            facecolor='#1e5080', edgecolor='#33aaff',
+            linewidth=1.8, zorder=2)
+        ax.add_patch(box)
+        pe_boxes[(r,c)] = box
 
-# Data streams
-acts = {}  # incoming A
-psums = {} # outgoing C
+        # PE label
+        lbl = ax.text(cx, cy+0.22, f'PE({r},{c})',
+                      ha='center', va='center', fontsize=8,
+                      fontweight='bold', color='#88ccff', zorder=5)
+        pe_labels[(r,c)] = lbl
 
+        # Weight inside PE (gold, stationary)
+        wt = ax.text(cx, cy-0.15, f'W[{r}][{c}] = w{r}{c}',
+                     ha='center', va='center', fontsize=7.5,
+                     color='#ffbb44', zorder=5)
+        pe_weight_labels[(r,c)] = wt
+
+# "y += a×w" label per PE (shown when active)
+pe_mac_labels = {}
 for r in range(N):
-    # Activation inputs (left side)
-    acts[r] = ax.text(-0.5, -r - 0.5, "", ha='center', va='center', color=A_COLOR, fontsize=11, fontweight='bold')
+    for c in range(N):
+        cx, cy = pe_center(r, c)
+        mac = ax.text(cx, cy-0.38, 'y += a×w',
+                      ha='center', va='center', fontsize=7,
+                      color='#55eeff', zorder=5, alpha=0)
+        pe_mac_labels[(r,c)] = mac
+
+# ── static row input labels (left side) ───────────────────────────────────────
+row_input_labels = {}
+for r in range(N):
+    _, cy = pe_center(r, 0)
+    lbl = ax.text(0.8, cy, f'A[{r}][k]',
+                  ha='center', va='center', fontsize=8.5,
+                  color='#cc33cc', zorder=4)
+    row_input_labels[r] = lbl
+    ax.annotate('', xy=(GRID_X0-0.05, cy), xytext=(1.15, cy),
+                arrowprops=dict(arrowstyle='->', color='#993399',
+                               lw=1.5, mutation_scale=12), zorder=3)
+
+# ── static column output labels (bottom) ─────────────────────────────────────
 for c in range(N):
-    # Psum outputs (bottom side)
-    psums[c] = ax.text(c + 0.4, -N - 0.5, "", ha='center', va='center', color=C_COLOR, fontsize=11, fontweight='bold')
+    cx, _ = pe_center(N-1, c)
+    bot_y = GRID_Y0 - 0.55
+    ax.annotate('', xy=(cx, bot_y), xytext=(cx, GRID_Y0-0.02),
+                arrowprops=dict(arrowstyle='->', color='#22bb55',
+                               lw=1.8, mutation_scale=13), zorder=3)
+    ax.text(cx, bot_y-0.22, f'C[*][{c}]',
+            ha='center', va='center', fontsize=8,
+            color='#22bb55', zorder=4)
 
-cycle_text = ax.text(-1.5, 1, "Cycle: 0", fontsize=14, fontweight='bold', color='#34495e')
+# ── inter-PE arrows (static, light) ───────────────────────────────────────────
+for r in range(N):
+    for c in range(N):
+        cx, cy = pe_center(r, c)
+        # rightward (activation) between columns
+        if c < N-1:
+            nx, _ = pe_center(r, c+1)
+            ax.annotate('', xy=(nx - PE_W/2, cy),
+                        xytext=(cx + PE_W/2, cy),
+                        arrowprops=dict(arrowstyle='->', color='#663366',
+                                       lw=1.2, mutation_scale=10), zorder=2)
+        # downward (partial sum) between rows
+        if r < N-1:
+            _, ny = pe_center(r+1, c)
+            ax.annotate('', xy=(cx, ny + PE_H/2),
+                        xytext=(cx, cy - PE_H/2),
+                        arrowprops=dict(arrowstyle='->', color='#1a6633',
+                                       lw=1.2, mutation_scale=10), zorder=2)
 
-# Legend
-ax.plot([], [], 'o', color=A_COLOR, label="Activation (Flows Right)")
-ax.plot([], [], 'o', color=B_COLOR, label="Weight (Stationary)")
-ax.plot([], [], 'o', color=C_COLOR, label="Partial Sum (Flows Down)")
-ax.legend(loc='upper right', frameon=False, fontsize=10)
+# ── dynamic objects ───────────────────────────────────────────────────────────
+# Activation packets — one per (row, column-position), moves right over time
+act_circles = {}
+for r in range(N):
+    for c in range(-1, N):  # c=-1 means it's in the left input lane
+        circ = plt.Circle((0,0), PACK_R, color='#cc33cc', zorder=6, alpha=0)
+        ax.add_patch(circ)
+        act_circles[(r,c)] = circ
 
-def init():
-    return []
+# Partial sum packets — one per column
+psum_circles = {}
+for c in range(N):
+    circ = plt.Circle((0,0), PACK_R, color='#22bb55', zorder=6, alpha=0)
+    ax.add_patch(circ)
+    psum_circles[c] = circ
+
+# Cycle counter text
+cycle_text = ax.text(5.4, 0.75, 'Cycle: 0',
+                     ha='center', va='center', fontsize=13,
+                     fontweight='bold', color='#ffffff', zorder=7)
+
+# Phase label
+phase_text = ax.text(5.4, 0.38, '',
+                     ha='center', va='center', fontsize=10,
+                     color='#aaaaaa', zorder=7)
+
+PHASES = {
+    range(0,1):   ('LOAD_W Phase', '#ffbb44'),
+    range(1,5):   ('COMPUTE Phase — Wavefront Propagation', '#33ccff'),
+    range(5,9):   ('DRAIN Phase', '#22bb55'),
+    range(9,14):  ('DONE', '#888888'),
+}
+
+def get_phase(cycle):
+    for r, (txt, col) in PHASES.items():
+        if cycle in r:
+            return txt, col
+    return '', '#888888'
 
 def update(frame):
     cycle = frame
-    cycle_text.set_text(f"Cycle: {cycle}")
-    
-    # Input Activations (staggered by row)
-    for r in range(N):
-        # Activation index for row r at this cycle
-        a_idx = cycle - r
-        if 0 <= a_idx < 4:
-            acts[r].set_text(f"X{a_idx}")
-        else:
-            acts[r].set_text("")
-            
-    # PE Grid values
+
+    # Update cycle text
+    cycle_text.set_text(f'Cycle: {cycle}')
+    ptxt, pcol = get_phase(cycle)
+    phase_text.set_text(ptxt)
+    phase_text.set_color(pcol)
+
+    # Determine which PEs are active this cycle
+    # PE(r,c) is active at cycles r+c, r+c+1, r+c+2, r+c+3 (N cycles)
+    # (wavefront: activation reaches PE(r,c) at cycle r+c)
     for r in range(N):
         for c in range(N):
-            # PE gets active at cycle = r + c
-            # It processes for 4 cycles
-            active_idx = cycle - (r + c)
-            if 0 <= active_idx < 4:
-                pes[(r, c)]['act'].set_text(f"X{active_idx}")
-                pes[(r, c)]['psum'].set_text(f"Y{active_idx}")
-                # Highlight active PE
-                pes[(r, c)]['act'].set_alpha(1.0)
+            active_start = r + c
+            is_active = (active_start <= cycle < active_start + N) and (cycle >= 1)
+
+            if is_active:
+                pe_boxes[(r,c)].set_facecolor('#0a3060')
+                pe_boxes[(r,c)].set_edgecolor('#00eeff')
+                pe_boxes[(r,c)].set_linewidth(3.0)
+                pe_mac_labels[(r,c)].set_alpha(1.0)
             else:
-                pes[(r, c)]['act'].set_text("")
-                pes[(r, c)]['psum'].set_text("")
+                pe_boxes[(r,c)].set_facecolor('#1e5080')
+                pe_boxes[(r,c)].set_edgecolor('#33aaff')
+                pe_boxes[(r,c)].set_linewidth(1.8)
+                pe_mac_labels[(r,c)].set_alpha(0)
 
-    # Output Psums (staggered by col, appears after N rows)
+    # Activation packets: show packet at PE(r, cycle-r) for cycle >= r
+    for r in range(N):
+        for c in range(-1, N):
+            circ = act_circles[(r,c)]
+            # Packet arrives at column c when cycle == r + c + 1
+            # Show it entering (c=-1) one cycle before
+            show_at_cycle = r + c + 1  # cycle when it's at column c
+            if cycle == show_at_cycle and 0 <= c < N:
+                cx, cy = pe_center(r, c)
+                circ.set_center((cx - PE_W*0.1, cy))
+                circ.set_alpha(0.92)
+            elif cycle == r and c == -1:   # entering from left
+                _, cy = pe_center(r, 0)
+                circ.set_center((GRID_X0 - 0.25, cy))
+                circ.set_alpha(0.85)
+            else:
+                circ.set_alpha(0)
+
+    # Partial sum packets: show at bottom of each column when draining
+    # Drain starts at cycle N + c (last row's last activation)
     for c in range(N):
-        out_idx = cycle - (N - 1 + c) - 1
-        if 0 <= out_idx < 4:
-            psums[c].set_text(f"Y{out_idx}")
+        drain_cycle = N + c   # when result of column c exits
+        circ = psum_circles[c]
+        if drain_cycle <= cycle < drain_cycle + 2:
+            cx, _ = pe_center(N-1, c)
+            circ.set_center((cx, GRID_Y0 - 0.3))
+            circ.set_alpha(0.92)
         else:
-            psums[c].set_text("")
-            
-    return []
+            circ.set_alpha(0)
 
-print("Generating dataflow animation...")
-ani = FuncAnimation(fig, update, frames=CYCLES, init_func=init, blit=False, interval=600)
-ani.save("docs/assets/dataflow.gif", writer='pillow', dpi=100)
-print("Saved to docs/assets/dataflow.gif")
+    return list(act_circles.values()) + list(psum_circles.values()) + \
+           [cycle_text, phase_text] + list(pe_boxes.values()) + \
+           list(pe_mac_labels.values())
+
+ani = FuncAnimation(fig, update, frames=TOTAL,
+                    init_func=lambda: [],
+                    blit=False, interval=INTERVAL)
+
+os.makedirs('docs/assets', exist_ok=True)
+out = 'docs/assets/dataflow.gif'
+ani.save(out, writer='pillow', dpi=120)
+print(f'Saved: {out}')
