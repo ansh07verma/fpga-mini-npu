@@ -88,7 +88,6 @@ fpga-mini-npu/
 │   └── utilization_reports/  # Vivado synthesis reports
 └── docs/
     ├── architecture.md       # Detailed architecture documentation
-    └── interview_prep.md     # Q&A for all 4 PRD interview questions
 ```
 
 ---
