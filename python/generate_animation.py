@@ -36,8 +36,8 @@ ax.text(6.0, 8.77,
         '4×4 INT8 PE grid  |  Activations → right  |  Partial sums ↓ down  |  Weights stationary',
         ha='center', fontsize=9, color='#999999')
 
-# ── Legend (bottom-left, fixed position, well clear of grid) ─────────────────
-LX, LY, LW, LH = 0.22, 0.32, 2.20, 2.38
+# ── Legend (right-middle — clear of the PE grid) ───────────────────────
+LX, LY, LW, LH = 9.55, 3.70, 2.05, 2.38
 leg_bg = FancyBboxPatch((LX, LY), LW, LH, boxstyle='round,pad=0.08',
                         facecolor='#111111', edgecolor='#555555', linewidth=1.3, zorder=6)
 ax.add_patch(leg_bg)
